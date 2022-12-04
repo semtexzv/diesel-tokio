@@ -6,10 +6,9 @@ use diesel::{
         methods::{ExecuteDsl, LimitDsl, LoadQuery},
         RunQueryDsl,
     },
-    r2d2::{ConnectionManager},
+    r2d2::ConnectionManager,
     result::QueryResult,
     Connection,
-
 };
 use std::{error::Error as StdError, fmt};
 
@@ -77,10 +76,12 @@ where
     async fn batch_execute_async(&self, query: &str) -> AsyncResult<()> {
         let self_ = self.clone();
         let query = query.to_string();
-        task::block_in_place(move || {
+        task::spawn_blocking(move || {
             let mut conn = self_.get().map_err(AsyncError::Checkout)?;
             conn.batch_execute(&query).map_err(AsyncError::Error)
         })
+        .await
+        .unwrap()
     }
 }
 
@@ -91,13 +92,13 @@ where
 {
     async fn run<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&mut Conn) -> QueryResult<R> + Send;
+        R: Send + 'static,
+        Func: FnOnce(&mut Conn) -> QueryResult<R> + Send + 'static;
 
     async fn transaction<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&Conn) -> QueryResult<R> + Send;
+        R: Send + 'static,
+        Func: FnOnce(&mut Conn) -> QueryResult<R> + Send + 'static;
 }
 
 #[async_trait]
@@ -108,33 +109,32 @@ where
     #[inline]
     async fn run<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&mut Conn) -> QueryResult<R> + Send,
+        R: Send + 'static,
+        Func: FnOnce(&mut Conn) -> QueryResult<R> + Send + 'static,
     {
         let self_ = self.clone();
-        task::block_in_place(move || {
+        task::spawn_blocking(move || {
             let mut conn = self_.get().map_err(AsyncError::Checkout)?;
             f(&mut *conn).map_err(AsyncError::Error)
         })
-
-
+        .await
+        .unwrap()
     }
 
     #[inline]
     async fn transaction<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&Conn) -> QueryResult<R> + Send,
+        R: Send + 'static,
+        Func: FnOnce(&mut Conn) -> QueryResult<R> + Send + 'static,
     {
         let self_ = self.clone();
-       task::block_in_place(move || {
-            let  conn = self_.get();
-           let mut con = conn.map_err(AsyncError::Checkout)?;
-           con.transaction(| x| f(&*x)).map_err(AsyncError::Error)
-
+        task::spawn_blocking(move || {
+            let conn = self_.get();
+            let mut con = conn.map_err(AsyncError::Checkout)?;
+            con.transaction(|x| f(&mut *x)).map_err(AsyncError::Error)
         })
-
-
+        .await
+        .unwrap()
     }
 }
 
@@ -147,70 +147,73 @@ where
     where
         Self: ExecuteDsl<Conn>;
 
-    async fn load_async<'a,U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
+    async fn load_async<'a, U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
     where
-        U: Send,
-        Self: LoadQuery<'a,Conn, U>;
+        U: Send + 'static,
+        Self: LoadQuery<'a, Conn, U>;
 
-    async fn get_result_async<'a,U>(self, asc: &AsyncConn) -> AsyncResult<U>
+    async fn get_result_async<'a, U>(self, asc: &AsyncConn) -> AsyncResult<U>
     where
-        U: Send,
-        Self: LoadQuery<'a,Conn, U>;
+        U: Send + 'static,
+        Self: LoadQuery<'a, Conn, U>;
 
-    async fn get_results_async<'a,U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
+    async fn get_results_async<'a, U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
     where
-        U: Send,
-        Self: LoadQuery<'a,Conn, U>;
+        U: Send + 'static,
+        Self: LoadQuery<'a, Conn, U>;
 
-    async fn first_async<'a,U>(self, asc: &AsyncConn) -> AsyncResult<U>
+    async fn first_async<'a, U>(self, asc: &AsyncConn) -> AsyncResult<U>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LimitDsl,
-        Limit<Self>: LoadQuery<'a,Conn, U>;
+        Limit<Self>: LoadQuery<'a, Conn, U>;
 }
 
 #[async_trait]
 impl<T, Conn> AsyncRunQueryDsl<Conn, Pool<ConnectionManager<Conn>>> for T
 where
-    T: Send + RunQueryDsl<Conn>,
+    T: Send + RunQueryDsl<Conn> + 'static,
     Conn: 'static + Connection + diesel::r2d2::R2D2Connection,
 {
-    async fn execute_async(self,  asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<usize>
+    async fn execute_async(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<usize>
     where
         Self: ExecuteDsl<Conn>,
     {
-          asc.run( |  conn| self.execute( conn )).await
+        asc.run(|conn| self.execute(conn)).await
     }
 
-    async fn load_async<'a,U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<Vec<U>>
+    async fn load_async<'a, U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<Vec<U>>
     where
-        U: Send,
-        Self: LoadQuery<'a,Conn, U>,
+        U: Send + 'static,
+        Self: LoadQuery<'a, Conn, U>,
     {
         asc.run(|mut conn| self.load(&mut conn)).await
     }
 
-    async fn get_result_async<'a,U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<U>
+    async fn get_result_async<'a, U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<U>
     where
-        U: Send,
-        Self: LoadQuery<'a,Conn, U>,
+        U: Send + 'static,
+        Self: LoadQuery<'a, Conn, U>,
     {
         asc.run(|mut conn| self.get_result(&mut conn)).await
     }
 
-    async fn get_results_async<'a,U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<Vec<U>>
+    async fn get_results_async<'a, U>(
+        self,
+        asc: &Pool<ConnectionManager<Conn>>,
+    ) -> AsyncResult<Vec<U>>
     where
-        U: Send,
-        Self: LoadQuery<'a,Conn, U>,
+        U: Send + 'static,
+        Self: LoadQuery<'a, Conn, U>,
     {
         asc.run(|mut conn| self.get_results(&mut conn)).await
     }
 
-    async fn first_async<'a,U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<U>
+    async fn first_async<'a, U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<U>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LimitDsl,
-        Limit<Self>: LoadQuery<'a,Conn, U>,
+        Limit<Self>: LoadQuery<'a, Conn, U>,
     {
         asc.run(|mut conn| self.first(&mut conn)).await
     }

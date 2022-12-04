@@ -1,4 +1,3 @@
-
 extern crate diesel;
 
 use diesel::{
